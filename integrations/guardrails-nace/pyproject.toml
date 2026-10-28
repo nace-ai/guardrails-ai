@@ -1,0 +1,15 @@
+[project]
+name = "guardrails-nace"
+version = "0.1.0"
+description = "Guardrails AI Hub-style Drex policy check. CON-208 slice."
+requires-python = ">=3.11"
+readme = "README.md"
+authors = [{ name = "Nace", email = "alish@nace.ai" }]
+dependencies = ["nace-sdk==0.2.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["guardrails_nace*"]
