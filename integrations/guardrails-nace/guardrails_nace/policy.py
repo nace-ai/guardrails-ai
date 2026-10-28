@@ -141,15 +141,14 @@ class DrexPolicy:
             raise TypeError("DrexPolicy validates a string")
         images = image_list(None if metadata is None else metadata.get("images"))
         model = self._model_for(images)
-        question = wire(self.question)
         response = self.client.system_one(
             value,
-            {self.question_id: question},
+            {self.question_id: self.question},
             model=model,
             images=images if images else None,
         )
-        answer = answer_for(response, self.question_id, question)
-        failed, reason = decide(question, answer, self.fail_when, self.fail_at)
+        answer = answer_for(response, self.question_id, self.question)
+        failed, reason = decide(self.question, answer, self.fail_when, self.fail_at)
         payload = {
             "validator": self.name,
             "on_fail": self.on_fail,
@@ -190,12 +189,6 @@ def image_list(raw: Any) -> tuple[str, ...] | None:
             raise TypeError("each image must be a non-empty string")
         images.append(item)
     return tuple(images)
-
-
-def wire(question: Noul | Score | Choice) -> Noul | Score | Choice:
-    if question.instructions is not None:
-        return question
-    return question.model_copy(update={"instructions": ""})
 
 
 def answer_for(

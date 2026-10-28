@@ -143,7 +143,7 @@ class PolicyTests(unittest.TestCase):
         policy(client, question).validate("hello")
         sent = client.calls[0][1]["toxic"]
         self.assertIsNone(question.instructions)
-        self.assertEqual(sent.instructions, "")
+        self.assertIsNone(sent.instructions)
         self.assertEqual(sent.criteria, {"true": "toxic", "false": "not toxic"})
 
     def test_omitted_model_is_drex_v2_not_the_sdk_default(self) -> None:
@@ -269,7 +269,7 @@ class PolicyTests(unittest.TestCase):
         sent = client.calls[0][1]["topic"]
         self.assertEqual(result.outcome, "fail")
         self.assertEqual(result.error_message, "P(billing)=0.8 >= fail_at=0.5")
-        self.assertEqual(sent.instructions, "")
+        self.assertIsNone(sent.instructions)
         self.assertIsNone(sent.criteria["billing"])
         self.assertEqual(result.metadata["answer"]["probabilities"]["billing"], 0.8)
         passing = DrexPolicy(
