@@ -4,7 +4,16 @@ import math
 from dataclasses import dataclass
 from typing import Any, Literal, Mapping, Protocol, Sequence
 
-from nace_sdk import NaceClient, Noul, NoulAnswer, Score, ScoreAnswer
+from nace_sdk import (
+    Choice,
+    ChoiceAnswer,
+    NaceClient,
+    Noul,
+    NoulAnswer,
+    RetryPolicy,
+    Score,
+    ScoreAnswer,
+)
 
 VERSION = "0.1.0"
 CLIENT_ID = f"guardrails-nace/{VERSION}"
@@ -25,7 +34,7 @@ class SystemOneCaller(Protocol):
     def system_one(
         self,
         state: str,
-        questions: Mapping[str, Noul | Score],
+        questions: Mapping[str, Noul | Score | Choice],
         *,
         model: str | None = None,
         images: Sequence[str] | None = None,
@@ -52,6 +61,8 @@ def open_client(
         api_key=api_key,
         base_url=base_url,
         client_info=CLIENT_ID,
+        timeout=60,
+        retry=RetryPolicy(timeout=180),
     )
 
 
@@ -61,7 +72,7 @@ class DrexPolicy:
     def __init__(
         self,
         question_id: str,
-        question: Noul | Score,
+        question: Noul | Score | Choice,
         *,
         fail_at: float,
         fail_when: str | None = None,
@@ -73,8 +84,8 @@ class DrexPolicy:
     ) -> None:
         if not isinstance(question_id, str) or not question_id:
             raise ValueError("question_id must be a non-empty string")
-        if not isinstance(question, (Noul, Score)):
-            raise TypeError("question must be a nace_sdk.Noul or nace_sdk.Score")
+        if not isinstance(question, (Noul, Score, Choice)):
+            raise TypeError("question must be a nace_sdk.Noul, nace_sdk.Score, or nace_sdk.Choice")
         if on_fail not in ON_FAIL:
             raise ValueError(f"on_fail must be one of {', '.join(sorted(ON_FAIL))}")
         if isinstance(fail_at, bool) or not isinstance(fail_at, (int, float)):
@@ -92,6 +103,12 @@ class DrexPolicy:
             chosen = "yes" if fail_when is None else fail_when
             if chosen not in ("yes", "no"):
                 raise ValueError("noul fail_when must be 'yes' or 'no'")
+        elif isinstance(question, Choice):
+            if not 0.0 <= self.fail_at <= 1.0:
+                raise ValueError("choice fail_at must be between 0 and 1")
+            if fail_when is not None:
+                raise ValueError("choice compares the selected option's probability to fail_at; omit fail_when")
+            chosen = "at_or_above"
         else:
             chosen = "at_or_above" if fail_when is None else fail_when
             if chosen not in ("at_or_above", "below"):
@@ -124,14 +141,15 @@ class DrexPolicy:
             raise TypeError("DrexPolicy validates a string")
         images = image_list(None if metadata is None else metadata.get("images"))
         model = self._model_for(images)
+        question = wire(self.question)
         response = self.client.system_one(
             value,
-            {self.question_id: self.question},
+            {self.question_id: question},
             model=model,
             images=images if images else None,
         )
-        answer = answer_for(response, self.question_id, self.question)
-        failed, reason = decide(self.question, answer, self.fail_when, self.fail_at)
+        answer = answer_for(response, self.question_id, question)
+        failed, reason = decide(question, answer, self.fail_when, self.fail_at)
         payload = {
             "validator": self.name,
             "on_fail": self.on_fail,
@@ -174,12 +192,22 @@ def image_list(raw: Any) -> tuple[str, ...] | None:
     return tuple(images)
 
 
-def answer_for(response: Any, question_id: str, question: Noul | Score) -> NoulAnswer | ScoreAnswer:
+def wire(question: Noul | Score | Choice) -> Noul | Score | Choice:
+    if question.instructions is not None:
+        return question
+    return question.model_copy(update={"instructions": ""})
+
+
+def answer_for(
+    response: Any,
+    question_id: str,
+    question: Noul | Score | Choice,
+) -> NoulAnswer | ScoreAnswer | ChoiceAnswer:
     answers = getattr(response, "answers", None)
     if not isinstance(answers, Mapping) or question_id not in answers:
         raise PolicyError(f"Drex response has no answer for {question_id}")
     answer = answers[question_id]
-    expected = NoulAnswer if isinstance(question, Noul) else ScoreAnswer
+    expected = {Noul: NoulAnswer, Score: ScoreAnswer, Choice: ChoiceAnswer}[type(question)]
     if not isinstance(answer, expected):
         raise PolicyError(
             f"Drex answer for {question_id} is {type(answer).__name__}, expected {expected.__name__}"
@@ -188,8 +216,8 @@ def answer_for(response: Any, question_id: str, question: Noul | Score) -> NoulA
 
 
 def decide(
-    question: Noul | Score,
-    answer: NoulAnswer | ScoreAnswer,
+    question: Noul | Score | Choice,
+    answer: NoulAnswer | ScoreAnswer | ChoiceAnswer,
     fail_when: str,
     fail_at: float,
 ) -> tuple[bool, str]:
@@ -198,6 +226,13 @@ def decide(
         failed = probability >= fail_at if fail_when == "yes" else probability < fail_at
         relation = ">=" if fail_when == "yes" else "<"
         return failed, f"P(yes)={probability} {relation} fail_at={fail_at}"
+    if isinstance(question, Choice):
+        selected = answer.choice
+        try:
+            probability = float(answer.probabilities[selected])
+        except KeyError as exc:
+            raise PolicyError(f"choice answer has no probability for {selected!r}") from exc
+        return probability >= fail_at, f"P({selected})={probability} >= fail_at={fail_at}"
     score = float(answer.score)
     failed = score >= fail_at if fail_when == "at_or_above" else score < fail_at
     relation = ">=" if fail_when == "at_or_above" else "<"

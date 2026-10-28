@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from nace_sdk import Choice, NaceError, Noul, Score, SystemOneResponse
+from nace_sdk import Choice, NaceError, NaceUnprocessableEntityError, Noul, RetryPolicy, Score, SystemOneResponse
 
 from guardrails_nace.policy import (
     CLIENT_ID,
@@ -41,6 +41,30 @@ def noul_response(probability: float) -> SystemOneResponse:
             "usage": {"input_tokens": 4, "image_tokens": 0, "output_tokens": 1},
             "evaluation_time_ms": 12.5,
             "answers": {"toxic": {"type": "noul", "noul": probability}},
+        }
+    )
+
+
+def choice_response(
+    probability: float = 0.8,
+    *,
+    selected: str = "billing",
+    probabilities: dict[str, float] | None = None,
+) -> SystemOneResponse:
+    return response(
+        {
+            "model": "drex-v2.0",
+            "usage": {"input_tokens": 4, "image_tokens": 0, "output_tokens": 1},
+            "answers": {
+                "topic": {
+                    "type": "choice",
+                    "choice": selected,
+                    "confidence": probability,
+                    "probabilities": probabilities
+                    if probabilities is not None
+                    else {"billing": probability, "other": round(1 - probability, 10)},
+                }
+            },
         }
     )
 
@@ -118,8 +142,8 @@ class PolicyTests(unittest.TestCase):
         client = FakeClient(noul_response(0.1))
         policy(client, question).validate("hello")
         sent = client.calls[0][1]["toxic"]
-        self.assertIs(sent, question)
-        self.assertIsNone(sent.instructions)
+        self.assertIsNone(question.instructions)
+        self.assertEqual(sent.instructions, "")
         self.assertEqual(sent.criteria, {"true": "toxic", "false": "not toxic"})
 
     def test_omitted_model_is_drex_v2_not_the_sdk_default(self) -> None:
@@ -234,16 +258,68 @@ class PolicyTests(unittest.TestCase):
             policy(wrong).validate("hello")
         self.assertEqual(len(wrong.calls), 1)
 
-    def test_choice_is_rejected_before_a_call(self) -> None:
-        client = FakeClient(noul_response(0.1))
-        with self.assertRaises(TypeError):
+    def test_choice_fails_on_the_selected_option_probability(self) -> None:
+        client = FakeClient(choice_response(0.8))
+        result = DrexPolicy(
+            "topic",
+            Choice(criteria={"billing": None, "other": "else"}),
+            fail_at=0.5,
+            client=client,
+        ).validate("invoice")
+        sent = client.calls[0][1]["topic"]
+        self.assertEqual(result.outcome, "fail")
+        self.assertEqual(result.error_message, "P(billing)=0.8 >= fail_at=0.5")
+        self.assertEqual(sent.instructions, "")
+        self.assertIsNone(sent.criteria["billing"])
+        self.assertEqual(result.metadata["answer"]["probabilities"]["billing"], 0.8)
+        passing = DrexPolicy(
+            "topic",
+            Choice(instructions="pick", criteria={"billing": None, "other": "else"}),
+            fail_at=0.9,
+            client=FakeClient(choice_response(0.8)),
+        ).validate("invoice")
+        self.assertEqual(passing.outcome, "pass")
+
+    def test_choice_without_the_selected_probability_is_not_a_pass(self) -> None:
+        client = FakeClient(choice_response(0.8, probabilities={"other": 1.0}))
+        with self.assertRaises(PolicyError):
             DrexPolicy(
                 "topic",
-                Choice(criteria={"billing": None, "other": None}),
+                Choice(instructions="pick", criteria={"billing": None, "other": "else"}),
                 fail_at=0.5,
+                client=client,
+            ).validate("invoice")
+
+    def test_one_image_is_forwarded_on_drex_max(self) -> None:
+        client = FakeClient(noul_response(0.1))
+        images = ["data:image/png;base64,AAAA"]
+        policy(client, model="drex-max").validate("chart", {"images": images})
+        self.assertEqual(client.calls[0][2], "drex-max")
+        self.assertEqual(client.calls[0][3], tuple(images))
+
+    def test_choice_fail_when_is_rejected_before_the_call(self) -> None:
+        client = FakeClient(choice_response())
+        with self.assertRaises(ValueError):
+            DrexPolicy(
+                "topic",
+                Choice(instructions="pick", criteria={"billing": None, "other": "else"}),
+                fail_at=0.5,
+                fail_when="yes",
                 client=client,
             )
         self.assertEqual(client.calls, [])
+
+    def test_422_is_not_a_pass(self) -> None:
+        error = NaceUnprocessableEntityError(
+            422,
+            {"error": {"issues": [{"path": "questions.topic.criteria", "message": "required"}]}},
+            {},
+        )
+        client = FakeClient(error)
+        with self.assertRaises(NaceUnprocessableEntityError) as caught:
+            policy(client).validate("hello")
+        self.assertEqual(caught.exception.issues[0]["path"], "questions.topic.criteria")
+        self.assertEqual(caught.exception.issues[0]["message"], "required")
 
     def test_sdk_errors_propagate(self) -> None:
         client = FakeClient(NaceError("no API key"))
@@ -257,6 +333,8 @@ class PolicyTests(unittest.TestCase):
             api_key="test-key",
             base_url="https://example.test/",
             client_info=CLIENT_ID,
+            timeout=60,
+            retry=RetryPolicy(timeout=180),
         )
         self.assertIs(client, ctor.return_value)
         ctor.return_value.system_one.assert_not_called()
