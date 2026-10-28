@@ -2,7 +2,7 @@
 
 This package is the Guardrails AI Hub validator slice of CON-208. It checks one string with Drex and returns pass or fail plus the full SDK response, including every probability.
 
-It calls `NaceClient.system_one` from nace-sdk 0.2.0. It does not send HTTP itself. It is not registered with the Guardrails Hub, and `on_fail` is stored on the result rather than applied.
+It calls `NaceClient.system_one` from nace-sdk 0.4.0. It does not send HTTP itself. It is not registered with the Guardrails Hub, and `on_fail` is stored on the result rather than applied.
 
 ## Not in this slice
 
