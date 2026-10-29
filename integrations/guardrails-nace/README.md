@@ -32,7 +32,7 @@ Set `NACE_API_KEY`. `NACE_BASE_URL` defaults to `https://console.nace.ai`. The S
 
 `result.outcome` is `"pass"` or `"fail"`. `result.metadata["response"]` is the SDK response. `result.metadata["answer"]` is the answer for that question. A fail keeps both, including `probabilities` on a score.
 
-A noul fails when `P(yes)` is at or above `fail_at`. Pass `fail_when="no"` when the no side should fail. A choice fails when the selected option's probability is at or above `fail_at`. Omit `fail_when` for choice. A score fails when the expected index is at or above `fail_at`. Pass `fail_when="below"` when a higher score should pass. `fail_at` is required. Thresholds stay with the caller. An omitted `instructions` field is sent as `""`, not null.
+A noul fails when `P(yes)` is at or above `fail_at`. Pass `fail_when="no"` when the no side should fail. A choice fails when the selected option's probability is at or above `fail_at`. Omit `fail_when` for choice. A score fails when the expected index is at or above `fail_at`. Pass `fail_when="below"` when a higher score should pass. `fail_at` is required. Thresholds stay with the caller. An omitted `instructions` field stays `None`. It is not rewritten to an empty string.
 
 The omitted model is `drex-v2.0`, not the SDK default `drex-latest`. Any other model id is forwarded. Images go in `metadata["images"]` and require `model="drex-max"`. Another model, or no model, raises `PolicyError` before the call. The images are not dropped. More than 8 images also raises before the call.
 
